@@ -54,8 +54,8 @@ def get_y_slr_basis_td(wf, tf, modes=None, det='TQ', TDIgen=1):
 
     y_basis_modes = []
     for mode in modes:
-        c = [c_func(stack, mode) for stack in [stack1, stack2, stack3]]
-        s = [s_func(stack, mode) for stack in [stack1, stack2, stack3]]
+        c = [wf.c_func(stack, mode) for stack in [stack1, stack2, stack3]]
+        s = [wf.s_func(stack, mode) for stack in [stack1, stack2, stack3]]
         # or wf.c_func(stack, mode) -> [wf.c_func(t, mode) for t in stack]
 
         y_basis_one = {}
