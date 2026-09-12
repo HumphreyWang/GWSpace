@@ -1,15 +1,31 @@
 #!/usr/bin/env python
 
+"""Time-domain TDI responses for linearly parametrized ringdown modes."""
+
 import numpy as np
-from numba import njit
+
 from gwspace.Orbit import detectors
-from gwspace.response import _matrix_res_pro
+from gwspace.response import _matrix_res_pro, tdi_XYZ2AET
 
 
 def get_y_slr_basis_td(wf, tf, modes=None, det='TQ', TDIgen=1):
-    """ Build link-level basis for j=1,2 so that:
+    """Build the two linear ringdown bases for every directed link.
+
+    Following Eqs. (A.5)-(A.12) of arXiv:2604.20914,
+
         y_slr(t) = B1 * g1_slr(t) + B2 * g2_slr(t)
+
     where (B1, B2) are linear amplitude parameters per mode.
+
+    ``wf.get_base_func(times, mode)`` returns the damped cosine and sine
+    functions C_lmn and S_lmn. It must accept a two-dimensional time array
+    and preserve its shape. ``wf.modes_dic[mode]`` supplies the corresponding
+    angular factors Y^+_lm and Y^x_lm.
+
+    The present implementation uses one constant arm light-travel time and
+    evaluates the detector geometry at ``tf`` rather than at every retarded
+    time. Thus its TDI-2 path is the equal-arm, frozen-geometry form, not a
+    general flexing unequal-arm second-generation TDI calculation.
     """
     if TDIgen == 1:
         TDI_delay = 4
@@ -18,9 +34,11 @@ def get_y_slr_basis_td(wf, tf, modes=None, det='TQ', TDIgen=1):
     else:
         raise NotImplementedError
     if modes is None:
-        modes = wf.modes_list()
+        modes = wf.modes_list
 
-    tf = np.array(tf)
+    tf = np.asarray(tf)
+    if tf.ndim != 1:
+        raise ValueError("tf must be a one-dimensional time array")
     det_obj = detectors[det](tf)
     p1, p2, p3 = det_obj.orbits
     L = det_obj.L_T
@@ -42,9 +60,17 @@ def get_y_slr_basis_td(wf, tf, modes=None, det='TQ', TDIgen=1):
     kn3 = np.dot(k, n3)
     del det_obj, p1, p2, p3, n1, n2, n3
 
-    stack1 = [tf_kp1 - i * L for i in range(TDI_delay+1)]
-    stack2 = [tf_kp2 - i * L for i in range(TDI_delay+1)]
-    stack3 = [tf_kp3 - i * L for i in range(TDI_delay+1)]
+    # p1, p2, p3 and L_T are measured in seconds, so tf-k.r and i*L are
+    # respectively the propagation delay and TDI delay in Eqs. (A.8)-(A.11).
+    # Flatten (spacecraft, delay, time) to one 2-D batch for get_base_func,
+    # then restore those three axes with reshape below.
+    delay_stack = [tf_kp - i*L for tf_kp in (tf_kp1, tf_kp2, tf_kp3) for i in range(TDI_delay+1)]
+    flat_shape = (len(delay_stack), len(tf))
+    basis_shape = (3, TDI_delay+1, len(tf))
+    del tf_kp1, tf_kp2, tf_kp3
+
+    # n1=n_32, n2=n_13, n3=n_21. Equation (A.11) uses the photon direction
+    # n_sr and denominator 2*(1-k.n_sr), which gives the signs below.
     link_table = {(1, 2): dict(zeta=xi3, denom=2*(1+kn3)),
                   (2, 1): dict(zeta=xi3, denom=2*(1-kn3)),
                   (1, 3): dict(zeta=xi2, denom=2*(1-kn2)),
@@ -54,9 +80,16 @@ def get_y_slr_basis_td(wf, tf, modes=None, det='TQ', TDIgen=1):
 
     y_basis_modes = []
     for mode in modes:
-        c = [wf.c_func(stack, mode) for stack in [stack1, stack2, stack3]]
-        s = [wf.s_func(stack, mode) for stack in [stack1, stack2, stack3]]
-        # or wf.c_func(stack, mode) -> [wf.c_func(t, mode) for t in stack]
+        mode_meta = wf.modes_dic[mode]
+        y_plus = mode_meta["Y_lm_p"]
+        y_cross = mode_meta["Y_lm_m"]
+
+        c, s = wf.get_base_func(delay_stack, mode)
+        c, s = np.asarray(c), np.asarray(s)
+        if c.shape != flat_shape or s.shape != flat_shape:
+            raise ValueError("get_base_func must preserve the shape of its time input")
+        c = c.reshape(basis_shape)
+        s = s.reshape(basis_shape)
 
         y_basis_one = {}
         for key, meta in link_table.items():
@@ -65,18 +98,17 @@ def get_y_slr_basis_td(wf, tf, modes=None, det='TQ', TDIgen=1):
             cs, ss = c[key[0] - 1], s[key[0] - 1]  # sender
             cr, sr = c[key[1] - 1], s[key[1] - 1]  # receiver
 
-            g1, g2 = [], []
-            for i in range(TDI_delay):
-                # Δc = c(t - L - k·r_s) - c(t - k·r_r)
-                dc = cs[i + 1] - cr[i]
-                ds = ss[i + 1] - sr[i]
-                # g1 = [ ζ^+ Δc + ζ^× Δs ] / denom
-                # g2 = [ -ζ^+ Δs + ζ^× Δc ] / denom
-                g1.append((zeta_p * dc + zeta_x * ds) / denom)
-                g2.append((-zeta_p*ds+zeta_x*dc)/denom)
+            # For link s->r at the additional TDI delay i*L,
+            #   dC = C(t-(i+1)L-k.r_s) - C(t-iL-k.r_r),
+            #   dS = S(t-(i+1)L-k.r_s) - S(t-iL-k.r_r).
+            # These are the bracketed differences in Eq. (A.11).
+            dc = cs[1:] - cr[:-1]
+            ds = ss[1:] - sr[:-1]
 
-            g1 = np.stack(g1, axis=0)
-            g2 = np.stack(g2, axis=0)
+            # Equation (A.11): g1 multiplies B_lmn,1=A_lmn*cos(phi_lmn),
+            # while g2 multiplies B_lmn,2=A_lmn*sin(phi_lmn).
+            g1 = (zeta_p*y_plus*dc + zeta_x*y_cross*ds) / denom
+            g2 = (-zeta_p*y_plus*ds + zeta_x*y_cross*dc) / denom
             y_basis_one[key] = (g1, g2)
 
         y_basis_modes.append(y_basis_one)
@@ -85,7 +117,11 @@ def get_y_slr_basis_td(wf, tf, modes=None, det='TQ', TDIgen=1):
 
 
 def get_XYZ_basis_td(wf, tf, modes=None, det='TQ', TDIgen=1):
-    """ Assemble TDI {X,Y,Z} basis so that X(t) = B1 * G_X1(t) + B2 * G_X2(t),  etc. """
+    """Assemble the XYZ bases by applying the TDI delays to each link basis.
+
+    This implements the linear construction in Eqs. (A.14)-(A.15) of
+    arXiv:2604.20914, e.g. X(t) = B1*G_X1(t) + B2*G_X2(t).
+    """
     y_basis = get_y_slr_basis_td(wf, tf, modes, det, TDIgen)
 
     channel_basis_modes = []
@@ -94,6 +130,8 @@ def get_XYZ_basis_td(wf, tf, modes=None, det='TQ', TDIgen=1):
         (g12_1, g12_2), (g21_1, g21_2) = yb[(1, 2)], yb[(2, 1)]
         (g23_1, g23_2), (g32_1, g32_2) = yb[(2, 3)], yb[(3, 2)]
 
+        # Each g array is indexed by an additional integer delay i*L. The
+        # combinations below apply the delay operators of Eqs. (A.13)-(A.15).
         if TDIgen == 1:
             GX1 = (g31_1[0]+g13_1[1]+g21_1[2]+g12_1[3]
                    - g21_1[0]-g12_1[1]-g31_1[2]-g13_1[3])
@@ -128,173 +166,19 @@ def get_XYZ_basis_td(wf, tf, modes=None, det='TQ', TDIgen=1):
     return channel_basis_modes
 
 
-def build_firefly_basis(self, gw_params, modes=None, network=None, channels=None, TDIgen=1):
-    """
-    构造 Firefly 线性参数的基底波形。
+def get_AET_basis_td(wf, tf, modes=None, det='TQ', TDIgen=1):
+    """Convert each mode's XYZ linear bases to the orthogonal AET channels."""
+    xyz_basis_modes = get_XYZ_basis_td(wf, tf, modes, det, TDIgen)
 
-    返回
-    ----
-    basis_dict[det][ch] = [h_0, h_1, ...]  # 下标与 param_names 对应
-    param_names : list[str]                # 如 ["Bc220","Bs220",...]
-    """
-    # network / channels，风格与 network_inner_product 一致
-    if network is None:
-        network = self.det_list
-    else:
-        network = list(network)
+    channel_basis_modes = []
+    for xyz_basis in xyz_basis_modes:
+        X1, X2 = xyz_basis['X']
+        Y1, Y2 = xyz_basis['Y']
+        Z1, Z2 = xyz_basis['Z']
+        A1, E1, T1 = tdi_XYZ2AET(X1, Y1, Z1)
+        A2, E2, T2 = tdi_XYZ2AET(X2, Y2, Z2)
+        channel_basis_modes.append({'A': (A1, A2),
+                                    'E': (E1, E2),
+                                    'T': (T1, T2)})
 
-    if channels is None:
-        channels = self.channels
-    else:
-        channels = tuple(channels)
-
-    # 展开 lmns，确定模式列表
-    lmn_all = self._expand_lmns(gw_params)
-    if modes is None:
-        modes_use = lmn_all
-    else:
-        modes_use = list(modes)
-        for lmn in modes_use:
-            if lmn not in lmn_all:
-                raise ValueError(
-                    f"模式 {lmn} 不在 gw_params['lmns'] 展开列表 {lmn_all}"
-                )
-
-    # 基底母参数：所有模式 amp/phi 先清零
-    base_gw_params = gw_params.copy()
-    for lmn in lmn_all:
-        base_gw_params[f"amp{lmn}"] = 0.0
-        base_gw_params[f"phi{lmn}"] = 0.0
-
-    # 先按参数名存 network 结构
-    basis_by_param = {}
-    param_names = []
-
-    for lmn_id in modes_use:
-        # Bc
-        name_cos = f"Bc{lmn_id}"
-        basis_by_param[name_cos] = self._network_strain_single_mode_B(
-            base_gw_params,
-            lmn_id=lmn_id,
-            Bc=1.0,
-            Bs=0.0,
-            network=network,
-            channels=channels,
-            TDIgen=TDIgen,
-        )
-        param_names.append(name_cos)
-
-        # Bs
-        name_sin = f"Bs{lmn_id}"
-        basis_by_param[name_sin] = self._network_strain_single_mode_B(
-            base_gw_params,
-            lmn_id=lmn_id,
-            Bc=0.0,
-            Bs=1.0,
-            network=network,
-            channels=channels,
-            TDIgen=TDIgen,
-        )
-        param_names.append(name_sin)
-
-    # 重排成 basis_dict[det][ch] = [h_i]，与 param_names 对应
-    basis_dict = {}
-    for det in network:
-        basis_dict[det] = {}
-        for ch in channels:
-            basis_dict[det][ch] = []
-
-    for name in param_names:
-        h_net = basis_by_param[name]
-        for det in network:
-            if det not in h_net:
-                raise RuntimeError(f"基底 {name} 缺少探测器 {det}")
-            for ch in channels:
-                if ch not in h_net[det]:
-                    raise RuntimeError(f"基底 {name} 缺少通道 {det}:{ch}")
-                basis_dict[det][ch].append(h_net[det][ch])
-
-    return basis_dict, param_names
-
-
-def build_firefly_M_s(self, gw_params, modes=None, data=None, network=None, channels=None, TDIgen=1):
-    """
-    从 gw_params 直接构造 Firefly 所需的基底、M 和 s。
-
-    参数
-    ----
-    gw_params : dict
-        QNM 源参数。
-    modes : list[str] or None
-        使用的具体模式；None 时由 gw_params['lmns'] 展开。
-    data : dict or None
-        None -> s_i = <h_i|h_i>；
-        dict -> s_i = <h_i|data>。
-        data 的结构须为 data[det][ch] = array。
-    network / channels / TDIgen
-        与 build_firefly_basis 一致。
-
-    返回
-    ----
-    basis_dict : dict[det][ch] = [h_i]
-    param_names: list[str]
-    M          : (Npar, Npar) 对称矩阵
-    s          : (Npar,)
-    """
-    # 和 build_firefly_basis 一样处理 network / channels
-    if network is None:
-        network = self.det_list
-    else:
-        network = list(network)
-
-    if channels is None:
-        channels = self.channels
-    else:
-        channels = list(channels)
-
-    # 先构造基底
-    basis_dict, param_names = self.build_firefly_basis(
-        gw_params,
-        modes=modes,
-        network=network,
-        channels=channels,
-        TDIgen=TDIgen,
-    )
-
-    npar = len(param_names)
-    M = np.zeros((npar, npar))
-    s_vec = np.zeros(npar)
-
-    # 小 helper：从 basis_dict 取出第 i 个基底的 network 结构
-    def get_hi(i):
-        hi = {}
-        for det in network:
-            det_dict = {}
-            for ch in channels:
-                det_dict[ch] = basis_dict[det][ch][i]
-            hi[det] = det_dict
-        return hi
-
-    # 构造 M 和 s（只算 i<=j）
-    for i in range(npar):
-        hi = get_hi(i)
-
-        if data is None:
-            s_vec[i] = self.network_inner_product(
-                hi, hi, network=network, channels=channels
-            )
-        else:
-            s_vec[i] = self.network_inner_product(
-                hi, data, network=network, channels=channels
-            )
-
-        for j in range(i, npar):
-            hj = get_hi(j)
-            Mij = self.network_inner_product(
-                hi, hj, network=network, channels=channels
-            )
-            M[i, j] = Mij
-            if j != i:
-                M[j, i] = Mij
-
-    return M, s_vec
+    return channel_basis_modes
