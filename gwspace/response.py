@@ -16,12 +16,21 @@ from numba import njit
 from gwspace.Orbit import detectors
 
 
+@njit(inline='always')
+def _matrix_res_pro_scalar(n0, n1, n2, p):
+    """TensorProduct(n, n):p for one frequency point."""
+    return (n0*p[0, 0]*n0 + n0*p[0, 1]*n1 + n0*p[0, 2]*n2
+            + n1*p[1, 0]*n0 + n1*p[1, 1]*n1 + n1*p[1, 2]*n2
+            + n2*p[2, 0]*n0 + n2*p[2, 1]*n1 + n2*p[2, 2]*n2)
+
+
 @njit
 def _matrix_res_pro(n, p):
     """TensorProduct(n, n) : P,  where A:B = A_ij B_ij"""
-    return (n[0] * p[0, 0] * n[0] + n[0] * p[0, 1] * n[1] + n[0] * p[0, 2] * n[2]
-            + n[1] * p[1, 0] * n[0] + n[1] * p[1, 1] * n[1] + n[1] * p[1, 2] * n[2]
-            + n[2] * p[2, 0] * n[0] + n[2] * p[2, 1] * n[1] + n[2] * p[2, 2] * n[2])
+    response = np.empty(n.shape[1], dtype=p.dtype)
+    for i in range(n.shape[1]):
+        response[i] = _matrix_res_pro_scalar(n[0, i], n[1, i], n[2, i], p)
+    return response
 
 
 def get_y_slr_td(wf, tf, det, TDIgen=1):
@@ -56,33 +65,35 @@ def get_y_slr_td(wf, tf, det, TDIgen=1):
     del p1, p2, p3, n1, n2, n3, det
 
     # Here `i` is for `i*L` TDI_delay, in 1st generation TDI we consider delay up to 4,
-    # i.e. t-0L, t-1L, t-2L, t-3L, t-4L. And then we calculate difference between each L delay
-    def h_tdi_delay(tf_s, xi_p, xi_c):
-        h_list = [wf.get_hphc(tf_s - i_*L) for i_ in range(TDI_delay+1)]
-        return [hp*xi_p+hc*xi_c for (hp, hc) in h_list]
+    # i.e. t-0L, t-1L, t-2L, t-3L, t-4L. And then we calculate difference between each L delay.
+    # Evaluate the waveform once per spacecraft and delay; each value is reused by its two arms.
+    h_p1 = [wf.get_hphc(tf_kp1 - i_*L) for i_ in range(TDI_delay+1)]
+    h_p2 = [wf.get_hphc(tf_kp2 - i_*L) for i_ in range(TDI_delay+1)]
+    h_p3 = [wf.get_hphc(tf_kp3 - i_*L) for i_ in range(TDI_delay+1)]
+    del tf_kp1, tf_kp2, tf_kp3
 
-    h3_p2 = h_tdi_delay(tf_kp2, *xi3)
-    h3_p1 = h_tdi_delay(tf_kp1, *xi3)
-    h2_p3 = h_tdi_delay(tf_kp3, *xi2)
-    h2_p1 = h_tdi_delay(tf_kp1, *xi2)
-    h1_p3 = h_tdi_delay(tf_kp3, *xi1)
-    h1_p2 = h_tdi_delay(tf_kp2, *xi1)
-    del tf_kp1, tf_kp2, tf_kp3, xi1, xi2, xi3
+    def get_y(h_sender, h_receiver, xi, denominator):
+        xi_p, xi_c = xi
+        return [((h_sender[i+1][0]*xi_p + h_sender[i+1][1]*xi_c)
+                 - (h_receiver[i][0]*xi_p + h_receiver[i][1]*xi_c))/denominator
+                for i in range(TDI_delay)]
 
-    def get_y(hi_pj, hi_pk, denominator):
-        return [(hi_pj[i+1]-hi_pk[i])/denominator for i in range(TDI_delay)]
-
-    y_slr = {(1, 2): get_y(h3_p1, h3_p2, 2*(1+kn3)),
-             (2, 1): get_y(h3_p2, h3_p1, 2*(1-kn3)),
-             (1, 3): get_y(h2_p1, h2_p3, 2*(1-kn2)),
-             (3, 1): get_y(h2_p3, h2_p1, 2*(1+kn2)),
-             (2, 3): get_y(h1_p2, h1_p3, 2*(1+kn1)),
-             (3, 2): get_y(h1_p3, h1_p2, 2*(1-kn1))}
+    y_slr = {(1, 2): get_y(h_p1, h_p2, xi3, 2*(1+kn3)),
+             (2, 1): get_y(h_p2, h_p1, xi3, 2*(1-kn3)),
+             (1, 3): get_y(h_p1, h_p3, xi2, 2*(1-kn2)),
+             (3, 1): get_y(h_p3, h_p1, xi2, 2*(1+kn2)),
+             (2, 3): get_y(h_p2, h_p3, xi1, 2*(1+kn1)),
+             (3, 2): get_y(h_p3, h_p2, xi1, 2*(1-kn1))}
     return y_slr
 
 
+@njit(inline='always')
 def tdi_XYZ2AET(X, Y, Z):
-    """ Calculate AET channel from XYZ """
+    """Calculate the orthogonal AET channels from the TDI XYZ channels.
+
+    This is the common XYZ-to-AET definition used by both the time-domain
+    response and the frequency-domain Numba kernel.
+    """
     A = 1/np.sqrt(2)*(Z-X)
     E = 1/np.sqrt(6)*(X-2*Y+Z)
     T = 1/np.sqrt(3)*(X+Y+Z)
@@ -120,52 +131,168 @@ def get_AET_td(wf, tf, det='TQ', TDIgen=1):
     return A, E, T
 
 
-def trans_y_slr_fd(vec_k, p, det, f):
-    """ See Marsat et al. (Eq. 21, 28) https://journals.aps.org/prd/abstract/10.1103/PhysRevD.103.083011 """
-    u12 = det.uni_vec_ij(1, 2)
-    u23 = det.uni_vec_ij(2, 3)
-    u13 = det.uni_vec_ij(1, 3)
-    ls = det.L_T
-    p_1, p_2, p_3 = det.orbits
+_Y_SLR = 0
+_XYZ = 1
+_AET = 2
 
-    # com_f = 1j/2*pi*f*ls in (Marsat et al.) is because it was using the A,E,T which are 1/2 of their LDC definitions
-    # See (Eq. 2) of McWilliams et al. https://journals.aps.org/prd/abstract/10.1103/PhysRevD.81.064014
-    com_f = 1j*np.pi*f*ls
+_LINKS = ((1, 2), (2, 1),
+          (1, 3), (3, 1),
+          (2, 3), (3, 2))
 
-    vk12 = np.dot(vec_k, u12)
-    vk23 = np.dot(vec_k, u23)
-    vk13 = np.dot(vec_k, u13)
 
-    exp12 = np.exp(1j * np.pi * f * (ls + np.dot(vec_k, p_1+p_2)))
-    exp23 = np.exp(1j * np.pi * f * (ls + np.dot(vec_k, p_2+p_3)))
-    exp31 = np.exp(1j * np.pi * f * (ls + np.dot(vec_k, p_3+p_1)))
-    del p_1, p_2, p_3, det
+@njit(inline='always')
+def _sinc_scalar(x):
+    """Equivalent to np.sinc(x) for a scalar."""
+    if x == 0.:
+        return 1.
+    return np.sin(np.pi*x)/(np.pi*x)
 
-    # In numpy, the sinc function is sin(pi x)/(pi x)
-    y12_pre = com_f * np.sinc(f * ls * (1 - vk12)) * exp12
-    y21_pre = com_f * np.sinc(f * ls * (1 + vk12)) * exp12
-    y13_pre = com_f * np.sinc(f * ls * (1 - vk13)) * exp31
-    y31_pre = com_f * np.sinc(f * ls * (1 + vk13)) * exp31
-    y23_pre = com_f * np.sinc(f * ls * (1 - vk23)) * exp23
-    y32_pre = com_f * np.sinc(f * ls * (1 + vk23)) * exp23
-    del vk12, vk23, vk13, exp12, exp31, exp23
 
-    def trans_response(p_):
-        n12pn12 = _matrix_res_pro(u12, p_)
-        n23pn23 = _matrix_res_pro(u23, p_)
-        n31pn31 = _matrix_res_pro(u13, p_)
+@njit(inline="always")
+def _link_pair_fd(f, L, k_dot_u, k_dot_positions):
+    """Calculate a pair of single-link responses.
 
-        y_slr = {(1, 2): y12_pre * n12pn12,
-                 (2, 1): y21_pre * n12pn12,
-                 (1, 3): y13_pre * n31pn31,
-                 (3, 1): y31_pre * n31pn31,
-                 (2, 3): y23_pre * n23pn23,
-                 (3, 2): y32_pre * n23pn23}
-        return y_slr
+    See Marsat et al. (Eqs. 21 and 28):
+    https://journals.aps.org/prd/abstract/10.1103/PhysRevD.103.083011
+    """
+    phase = np.pi * f * (L + k_dot_positions)
+
+    # com_f = 1j/2*pi*f*L in Marsat et al. because their A, E, T are 1/2
+    # of the LDC definitions. See Eq. 2 of McWilliams et al.:
+    # https://journals.aps.org/prd/abstract/10.1103/PhysRevD.81.064014
+    common = 1j * np.pi * f * L * (np.cos(phase) + 1j * np.sin(phase))
+
+    # np.sinc(x) is defined as sin(pi*x)/(pi*x).
+    forward = common * _sinc_scalar(f * L * (1.0 - k_dot_u))
+    backward = common * _sinc_scalar(f * L * (1.0 + k_dot_u))
+    return forward, backward
+
+
+@njit(inline="always")
+def _xyz_from_links(y12, y21, y13, y31, y23, y32, delay, factor):
+    """Combine six single-link responses into equal-arm Michelson XYZ."""
+    X = factor * (y31 + delay * y13 - y21 - delay * y12)
+    Y = factor * (y12 + delay * y21 - y32 - delay * y23)
+    Z = factor * (y23 + delay * y32 - y13 - delay * y31)
+    return X, Y, Z
+
+
+@njit
+def _trans_fd_kernel(vec_k, tensors, p1, p2, p3, f, L, TDIgen, output):
+    n_samples = max(len(f), p1.shape[1])
+    n_channels = 6 if output == _Y_SLR else 3
+    response = np.empty((len(tensors), n_channels, n_samples), dtype=np.complex128)
+
+    for i in range(n_samples):
+        fi = f[0] if len(f) == 1 else f[i]
+        orbit_i = 0 if p1.shape[1] == 1 else i
+
+        u12_0 = (p2[0, orbit_i] - p1[0, orbit_i]) / L
+        u12_1 = (p2[1, orbit_i] - p1[1, orbit_i]) / L
+        u12_2 = (p2[2, orbit_i] - p1[2, orbit_i]) / L
+
+        u23_0 = (p3[0, orbit_i] - p2[0, orbit_i]) / L
+        u23_1 = (p3[1, orbit_i] - p2[1, orbit_i]) / L
+        u23_2 = (p3[2, orbit_i] - p2[2, orbit_i]) / L
+
+        u13_0 = (p3[0, orbit_i] - p1[0, orbit_i]) / L
+        u13_1 = (p3[1, orbit_i] - p1[1, orbit_i]) / L
+        u13_2 = (p3[2, orbit_i] - p1[2, orbit_i]) / L
+
+        k_dot_u12 = vec_k[0] * u12_0 + vec_k[1] * u12_1 + vec_k[2] * u12_2
+        k_dot_u23 = vec_k[0] * u23_0 + vec_k[1] * u23_1 + vec_k[2] * u23_2
+        k_dot_u13 = vec_k[0] * u13_0 + vec_k[1] * u13_1 + vec_k[2] * u13_2
+
+        k_dot_p12 = (vec_k[0] * (p1[0, orbit_i] + p2[0, orbit_i])
+                     + vec_k[1] * (p1[1, orbit_i] + p2[1, orbit_i])
+                     + vec_k[2] * (p1[2, orbit_i] + p2[2, orbit_i]))
+        k_dot_p23 = (vec_k[0] * (p2[0, orbit_i] + p3[0, orbit_i])
+                     + vec_k[1] * (p2[1, orbit_i] + p3[1, orbit_i])
+                     + vec_k[2] * (p2[2, orbit_i] + p3[2, orbit_i]))
+        k_dot_p31 = (vec_k[0] * (p3[0, orbit_i] + p1[0, orbit_i])
+                     + vec_k[1] * (p3[1, orbit_i] + p1[1, orbit_i])
+                     + vec_k[2] * (p3[2, orbit_i] + p1[2, orbit_i]))
+
+        y12_pre, y21_pre = _link_pair_fd(fi, L, k_dot_u12, k_dot_p12)
+        y23_pre, y32_pre = _link_pair_fd(fi, L, k_dot_u23, k_dot_p23)
+        y13_pre, y31_pre = _link_pair_fd(fi, L, k_dot_u13, k_dot_p31)
+
+        delay = 0j
+        factor = 0j
+
+        if output != _Y_SLR:
+            # Time delay factor Dt = exp(2j*pi*f*L).
+            delay_phase = 2.0 * np.pi * fi * L
+            delay = np.cos(delay_phase) + 1j * np.sin(delay_phase)
+            delay2 = delay * delay
+
+            factor = 1.0 - delay2
+            if TDIgen == 2:
+                factor *= 1.0 - delay2 * delay2
+
+        for j in range(len(tensors)):
+            tensor = tensors[j]
+
+            n12pn12 = _matrix_res_pro_scalar(u12_0, u12_1, u12_2, tensor)
+            n23pn23 = _matrix_res_pro_scalar(u23_0, u23_1, u23_2, tensor)
+            n13pn13 = _matrix_res_pro_scalar(u13_0, u13_1, u13_2, tensor)
+
+            y12 = y12_pre * n12pn12
+            y21 = y21_pre * n12pn12
+            y13 = y13_pre * n13pn13
+            y31 = y31_pre * n13pn13
+            y23 = y23_pre * n23pn23
+            y32 = y32_pre * n23pn23
+
+            if output == _Y_SLR:
+                response[j, 0, i] = y12
+                response[j, 1, i] = y21
+                response[j, 2, i] = y13
+                response[j, 3, i] = y31
+                response[j, 4, i] = y23
+                response[j, 5, i] = y32
+                continue
+
+            X, Y, Z = _xyz_from_links(y12, y21, y13, y31, y23, y32, delay, factor)
+
+            if output == _XYZ:
+                response[j, 0, i] = X
+                response[j, 1, i] = Y
+                response[j, 2, i] = Z
+            else:
+                A, E, T = tdi_XYZ2AET(X, Y, Z)
+                response[j, 0, i] = A
+                response[j, 1, i] = E
+                response[j, 2, i] = T
+
+    return response
+
+
+def _trans_fd(vec_k, p, det, f, TDIgen, output):
+    if TDIgen not in (1, 2):
+        raise NotImplementedError
 
     if type(p) is not tuple:
-        p = (p, )
-    return tuple(trans_response(p_0) for p_0 in p)
+        p = (p,)
+
+    f = np.atleast_1d(f)
+    p1, p2, p3 = (np.asarray(position).reshape(3, -1) for position in det.orbits)
+    if len(f) != 1 and p1.shape[1] != 1 and len(f) != p1.shape[1]:
+        raise ValueError("f and detector orbits must have equal lengths, unless one has length 1")
+
+    return _trans_fd_kernel(vec_k, np.asarray(p), p1, p2, p3, f, det.L_T, TDIgen, output)
+
+
+def trans_y_slr_fd(vec_k, p, det, f):
+    """Calculate the six single-link frequency-domain responses.
+
+    See Marsat et al. (Eqs. 21 and 28):
+    https://journals.aps.org/prd/abstract/10.1103/PhysRevD.103.083011
+    """
+    response = _trans_fd(vec_k, p, det, f, TDIgen=1, output=_Y_SLR)
+
+    return tuple({link: tensor_response[i] for i, link in enumerate(_LINKS)}
+                 for tensor_response in response)
 
 
 def trans_XYZ_fd(vec_k, p, det, f, TDIgen=1):
@@ -175,27 +302,12 @@ def trans_XYZ_fd(vec_k, p, det, f, TDIgen=1):
     :param vec_k: the prop direction of GWs (x,y,z), which is determined by (lambda, beta)
     :param p: p is a tuple, which contains P_lm (or P_x & P_+, i.e. e^+ & e^x in $h = h_+ e^+ + h_x e^x$)
     :param det: GW detector Orbit object
-    :param f: frequency array
+    :param f: frequency scalar or array
     :param TDIgen: TDI generation
     :return: tuple with same length of tuple p
     """
-    y_slr_list = trans_y_slr_fd(vec_k, p, det, f)
-    Dt = np.exp(2j*np.pi*f*det.L_T)
-    Dt2 = Dt*Dt    
-
-    def trans_xyz(y_slr):
-        X = y_slr[(3, 1)]+Dt*y_slr[(1, 3)]-y_slr[(2, 1)]-Dt*y_slr[(1, 2)]
-        Y = y_slr[(1, 2)]+Dt*y_slr[(2, 1)]-y_slr[(3, 2)]-Dt*y_slr[(2, 3)]
-        Z = y_slr[(2, 3)]+Dt*y_slr[(3, 2)]-y_slr[(1, 3)]-Dt*y_slr[(3, 1)]
-        return np.array([X, Y, Z])*(1.-Dt2)
-
-    if TDIgen == 1:
-        return tuple(trans_xyz(y) for y in y_slr_list)
-    elif TDIgen == 2:
-        fact = 1-Dt2*Dt2
-        return tuple(trans_xyz(y)*fact for y in y_slr_list)
-    else:
-        raise NotImplementedError
+    response = _trans_fd(vec_k, p, det, f, TDIgen, output=_XYZ)
+    return tuple(response)
 
 
 def trans_AET_fd(vec_k, p, det, f, TDIgen=1):
@@ -205,33 +317,9 @@ def trans_AET_fd(vec_k, p, det, f, TDIgen=1):
     :param vec_k: the prop direction of GWs (x,y,z), which is determined by (lambda, beta)
     :param p: p is a tuple, which contains P_lm (or P_x & P_+, i.e. e^+ & e^x in $h = h_+ e^+ + h_x e^x$)
     :param det: GW detector Orbit object
-    :param f: frequency array
+    :param f: frequency scalar or array
     :param TDIgen: TDI generation
     :return: tuple with same length of tuple p
     """
-    y_slr_list = trans_y_slr_fd(vec_k, p, det, f)
-    Dt = np.exp(2j*np.pi*f*det.L_T)  # Time delay factor
-    Dt2 = Dt*Dt
-
-    def trans_aet(y_slr):
-        A = ((1+Dt)*(y_slr[(3, 1)]+y_slr[(1, 3)])
-             - y_slr[(2, 3)]-Dt*y_slr[(3, 2)]
-             - y_slr[(2, 1)]-Dt*y_slr[(1, 2)])
-        E = ((1-Dt)*(y_slr[(1, 3)]-y_slr[(3, 1)])
-             + (1+2*Dt)*(y_slr[(2, 1)]-y_slr[(2, 3)])
-             + (2+Dt)*(y_slr[(1, 2)]-y_slr[(3, 2)]))
-        T = (1-Dt)*(y_slr[(1, 3)]-y_slr[(3, 1)]
-                    + y_slr[(2, 1)]-y_slr[(1, 2)]
-                    + y_slr[(3, 2)]-y_slr[(2, 3)])
-        A *= 1/np.sqrt(2)*(Dt2-1)
-        E *= 1/np.sqrt(6)*(Dt2-1)
-        T *= 1/np.sqrt(3)*(Dt2-1)
-        return np.array([A, E, T])
-    
-    if TDIgen == 1:
-        return tuple(trans_aet(y) for y in y_slr_list)
-    elif TDIgen == 2:
-        fact = 1 - Dt2*Dt2
-        return tuple(trans_aet(y)*fact for y in y_slr_list)
-    else:
-        raise NotImplementedError
+    response = _trans_fd(vec_k, p, det, f, TDIgen, output=_AET)
+    return tuple(response)
