@@ -38,6 +38,7 @@ examples = ["matplotlib"]
 sgwb = [
     "healpy",
     "sympy",
+    "scipy>=1.15",
 ]
 emri = ["fastemriwaveforms>=2.0.0"]
 ringdown = ["lalsuite"]

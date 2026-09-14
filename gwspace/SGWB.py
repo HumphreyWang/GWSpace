@@ -16,7 +16,7 @@ from gwspace.Orbit import detectors
 from gwspace.utils import frequency_noise_from_psd
 from gwspace.Waveform import p0_plus_cross
 from gwspace.constants import H0_SI, PI, PI_2
-from scipy.special import sph_harm
+from scipy.special import sph_harm_y
 
 
 class SGWB(object):
@@ -48,7 +48,7 @@ class SGWB(object):
             self.bl_bm_idx = [self.idx_2_alm(self.blmax, ii) for ii in range(2*self.blm_size-self.blmax-1)]
 
             l_m_val = [self.idx_2_alm(self.blmax, ii) for ii in range(self.blm_size)]
-            self.blms = np.array([sph_harm(m, l, phi, theta) for (l, m) in l_m_val], dtype=np.complex128)
+            self.blms = np.array([sph_harm_y(l, m, theta, phi) for (l, m) in l_m_val], dtype=np.complex128)
             beta_vals = self.calc_beta()
             blm_full = self.calc_blm_full()
             alms_inj = np.dot(np.dot(beta_vals, blm_full), blm_full)
