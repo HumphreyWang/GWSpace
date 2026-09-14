@@ -1,3 +1,6 @@
+// Copyright (C) 2023 En-Kun Li (GWSpace modifications)
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 #ifndef SPACECRAFTS_H
 #define SPACECRAFTS_H
 

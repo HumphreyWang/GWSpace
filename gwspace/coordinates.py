@@ -1,6 +1,8 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# Han Wang 2026
+# Copyright (C) 2026 Han Wang
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Coordinate transformation."""
 
 import numpy as np

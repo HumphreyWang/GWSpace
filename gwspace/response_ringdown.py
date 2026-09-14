@@ -1,4 +1,7 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# Copyright (C) 2025-2026 Han Wang
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 """Time-domain TDI responses for linearly parametrized ringdown modes."""
 

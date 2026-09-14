@@ -1,11 +1,8 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# ==================================
-# File Name: Waveform.py
-# Author: En-Kun Li, Han Wang
-# Mail: lienk@mail.sysu.edu.cn, wanghan657@mail2.sysu.edu.cn
-# Created Time: 2023-08-01 12:32:36
-# ==================================
+# Copyright (C) 2023-2026 En-Kun Li, Han Wang
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """All available waveforms for different GW sources."""
 
 import numpy as np
@@ -558,11 +555,16 @@ class EMRIWaveform(BasicWaveform):
     :param Phi_phi0: (double, optional) Initial phase for :math:`\Phi_\phi`. Default is 0.0.
     :param Phi_theta0: (double, optional) Initial phase for :math:`\Phi_\Theta`. Default is 0.0.
     :param Phi_r0: (double, optional) Initial phase for :math:`\Phi_r`. Default is 0.0.
+    :param delta_t: Internal FEW sampling interval in seconds, independent of queried times.
+        Default is 1 s; convergence must be checked for the waveform and TDI channels of interest.
+    :param time_buffer: Additional waveform coverage on each side of [0, T_obs], in seconds.
+        Default is 1000 s to cover propagation and TDI delays for the supported detectors.
+        Initial orbital parameters and phases remain defined at t=0.
     :param kwargs: (dict, optional) Additional parameters need to save
     """
 
     def __init__(self, M, mu, a, p0, e0, x0, dist, qS, phiS, qK, phiK, T_obs,
-                 Phi_phi0=0, Phi_theta0=0, Phi_r0=0, **kwargs):
+                 Phi_phi0=0, Phi_theta0=0, Phi_r0=0, delta_t=1., time_buffer=1000., **kwargs):
         self.M = M
         self.mu = mu
         self.a = a
@@ -578,6 +580,9 @@ class EMRIWaveform(BasicWaveform):
         self.Phi_phi0 = Phi_phi0
         self.Phi_theta0 = Phi_theta0
         self.Phi_r0 = Phi_r0
+        self.delta_t = delta_t
+        self.time_buffer = time_buffer
+        self._hphc_cache_key = None
 
         self.wave_func = self._gen_wave_func()
         self.theta, self.phi = self.wave_func._get_viewing_angles(qS, phiS, qK, phiK)  # get view angle
@@ -632,7 +637,7 @@ class EMRIWaveform(BasicWaveform):
         return teuk_modes_in, ylms_in, ls, ms, ns
 
     def get_hphc_source(self, T_obs, dt, eps=1e-5, modes=None):
-        """ Calculate the time domain waveform. TODO: use T_obs
+        """Generate uniformly sampled FEW output starting from the t=0 initial state.
 
         :param T_obs: the observation time in [year]
         :param dt: sampling time in [s]
@@ -653,27 +658,83 @@ class EMRIWaveform(BasicWaveform):
                            mode_selection_threshold=eps, mode_selection=modes)
         return h.real, h.imag
 
-    def get_hphc(self, tf, eps=1e-5, modes=None):
-        Tobs = tf[-1]/YRSID_SI
-        dt = tf[1]-tf[0]
-        # T = Tobs - int(Tobs * YRSID_SI/dt - tf.shape[0]) * dt/YRSID_SI
-        # print("the total observ time is ", Tobs)
-        hpS, hcS = self.get_hphc_source(Tobs, dt, eps, modes)
+    def _prepare_hphc(self, eps, modes):
+        # FIXME: Revisit FEW's trajectory and waveform evaluation APIs for delayed times.
+        #  Previously, get_hphc inferred T and dt from tf[-1] and tf[1]-tf[0], then
+        #  truncated/zero-padded FEW output starting at zero to match the requested length.
+        #  This lost time offsets/nonuniform timestamps and caused incorrect TDI
+        #  cancellation and boundary spikes. As a temporary solution, cache a uniform
+        #  waveform on its true time axis and use quintic splines at the requested times;
+        #  buffered history preserves the initial orbital state and phases at t=0.
+        #  Investigate whether FEW can evaluate the waveform at these times without
+        #  this extra strain interpolation, and verify time/phase conventions and
+        #  numerical convergence, especially for the strongly suppressed T channel.
+        if (not np.all(np.isfinite([self.T_obs, self.delta_t, self.time_buffer]))
+                or self.T_obs <= 0 or self.delta_t <= 0 or self.time_buffer < 0):
+            raise ValueError("T_obs and delta_t must be positive; time_buffer must be nonnegative.")
 
-        tf_size = tf.shape[0]
-        h_size = hpS.shape[0]
-        if tf_size > h_size:
-            hp = np.zeros_like(tf)
-            hc = np.zeros_like(tf)
-            hp[:h_size] = hpS
-            hc[:h_size] = hcS
-        elif tf_size < h_size:
-            hp = hpS[-tf_size:]
-            hc = hcS[-tf_size:]
+        if self.time_buffer == 0:
+            t_start = 0.
+            hp, hc = self.get_hphc_source(self.T_obs/YRSID_SI, self.delta_t, eps, modes)
         else:
-            hp = hpS
-            hc = hcS
-        return hp, hc
+            from few.trajectory.inspiral import EMRIInspiral
+            from few.trajectory.ode import SchwarzEccFlux
+            from few.utils.constants import YRSID_SI as FEW_YEAR
+
+            # The fixed waveform model is Schwarzschild: spin and x0 are ignored by FEW.
+            # Obtain the earlier orbital state without relabelling the t=0 initial data.
+            traj = EMRIInspiral(func=SchwarzEccFlux)
+            back = traj(self.M, self.mu, 0., self.p0, self.e0, 1.,
+                        T=self.time_buffer/FEW_YEAR, dt=self.delta_t, integrate_backwards=True)
+            t_start = -back[0][-1]
+            p_start, e_start = back[1][-1], back[2][-1]
+
+            # Calibrate phases with forward evolution from that state. This avoids
+            # relying on FEW's backward-output phase convention; Phi_*0 stay at t=0.
+            forward = traj(self.M, self.mu, 0., p_start, e_start, 1.,
+                           T=-t_start/FEW_YEAR, dt=self.delta_t, integrate_backwards=False)
+            phi_start = self.Phi_phi0 - forward[4][-1]
+            phi_r_start = self.Phi_r0 - forward[6][-1]
+            h = self.wave_func(
+                self.M, self.mu, self.a, p_start, e_start, self.x0, self.dist,
+                self.qS, self.phiS, self.qK, self.phiK,
+                phi_start, self.Phi_theta0, phi_r_start,
+                T=(self.T_obs + self.time_buffer - t_start)/FEW_YEAR,
+                dt=self.delta_t, mode_selection_threshold=eps, mode_selection=modes)
+            # Preserve the polarization convention of get_hphc_source.
+            hp, hc = h.real, h.imag
+
+        # FEW returns uniform samples at this origin and spacing, not at the
+        # requested delayed times. Its returned length also accounts for early termination.
+        times = t_start + np.arange(len(hp))*self.delta_t
+        self._hp_func = Spline(times, hp, k=5, ext=2)
+        self._hc_func = Spline(times, hc, k=5, ext=2)
+        self._hphc_time_range = (times[0], times[-1])
+
+    def get_hphc(self, tf, eps=1e-5, modes=None):
+        """Evaluate the waveform at the supplied times in seconds relative to the initial state.
+
+        All delayed calls share one quintic interpolant of the FEW waveform. The
+        cache is rebuilt when physical parameters, sampling settings or modes change.
+        Queries outside the generated interval raise instead of padding or extrapolating;
+        increase time_buffer/T_obs if needed, unless the trajectory has already ended.
+        """
+        tf = np.asarray(tf, dtype=float)
+        if not np.all(np.isfinite(tf)):
+            raise ValueError("Waveform query times must be finite.")
+        mode_key = modes if modes is None or isinstance(modes, str) else tuple(tuple(m) for m in modes)
+        key = (self.M, self.mu, self.a, self.p0, self.e0, self.x0, self.dist,
+               self.qS, self.phiS, self.qK, self.phiK,
+               self.Phi_phi0, self.Phi_theta0, self.Phi_r0,
+               self.T_obs, self.delta_t, self.time_buffer, eps, mode_key)
+        if key != self._hphc_cache_key:
+            self._prepare_hphc(eps, modes)
+            self._hphc_cache_key = key
+
+        if np.any(tf < self._hphc_time_range[0]) or np.any(tf > self._hphc_time_range[1]):
+            raise ValueError(f"Query times outside generated EMRI interval {self._hphc_time_range} s; "
+                             "check time_buffer, T_obs and the trajectory endpoint.")
+        return self._hp_func(tf), self._hc_func(tf)
 
 
 class RingdownWaveform(BasicWaveform):
