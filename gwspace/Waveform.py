@@ -1,11 +1,8 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# ==================================
-# File Name: Waveform.py
-# Author: En-Kun Li, Han Wang
-# Mail: lienk@mail.sysu.edu.cn, wanghan657@mail2.sysu.edu.cn
-# Created Time: 2023-08-01 12:32:36
-# ==================================
+# Copyright (C) 2023-2026 En-Kun Li, Han Wang
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """All available waveforms for different GW sources."""
 
 import numpy as np

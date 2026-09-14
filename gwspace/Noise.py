@@ -1,11 +1,8 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# ==================================
-# File Name: Noise.py
-# Author: En-Kun Li, Han Wang
-# Mail: lienk@mail.sysu.edu.cn, wanghan657@mail2.sysu.edu.cn
-# Created Time: 2022-11-04 11:03:09
-# ==================================
+# Copyright (C) 2022-2024 En-Kun Li, Han Wang
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Space detectors' noises. Support noises in displacement or relative frequency units,
  PSDs in different channels, sensitivity curves, etc."""
 

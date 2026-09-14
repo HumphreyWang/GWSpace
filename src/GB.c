@@ -1,3 +1,6 @@
+// Copyright (C) 2023-2024 En-Kun Li, Ya-Nan Li (GWSpace modifications)
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

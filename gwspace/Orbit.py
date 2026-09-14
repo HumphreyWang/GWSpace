@@ -1,11 +1,8 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# ==================================
-# File Name: Orbit.py
-# Author: En-Kun Li, Han Wang
-# Mail: lienk@mail.sysu.edu.cn, wanghan657@mail2.sysu.edu.cn
-# Created Time: 2023-08-01 10:23:11
-# ==================================
+# Copyright (C) 2023-2024 En-Kun Li, Han Wang
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Space detectors' orbits, note that the orbits are in nature unit(in second).
  Support orbits of detector's three spacecrafts and its guiding center,
  coordinates of unit vector between spacecrafts, etc."""

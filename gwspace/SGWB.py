@@ -1,10 +1,8 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# ==================================
-# File Name: test_SGWB.py
-# Author: Zhiyuan Li, Han Wang
-# Mail: wangh657@mail2.sysu.edu.cn
-# ==================================
+# Copyright (C) 2023 Zhiyuan Li, Han Wang
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Generate the Gaussian-like SGWB signal and signal after being responsed in a space detector
  in frequency domain. Support isotropy SGWB and SGWB from a specific orientation. """
 

@@ -17,9 +17,6 @@
  *  MA  02111-1307  USA
  */
 
-// gwspace independent code (c) 2023 En-Kun Li
-
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>

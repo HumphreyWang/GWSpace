@@ -1,15 +1,6 @@
-/**
- * \author Sylvain Marsat, University of Maryland - NASA GSFC
- *
- * \brief C header defining useful physical constants (values taken from LAL).
- * Also defines boolean conventions.
- *
- *------------------------------------------------
- * \author En-Kun Li, SYSU - China
- *
- * \brief add some more constants
- * \date 2023-09-25
- */
+// Copyright (C) 2023 En-Kun Li (GWSpace additions)
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Original constants: Sylvain Marsat, with values taken from LAL.
 
 #ifndef _CONSTANTS_H
 #define _CONSTANTS_H

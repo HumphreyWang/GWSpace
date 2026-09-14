@@ -1,11 +1,7 @@
-#!/usr/bin/env python
-#-*- coding: utf-8 -*-  
-#==================================
-# File Name: FastGB.pyx
-# Author: ekli
-# Mail: lekf123@163.com
-# Created Time: 2023-09-06 19:39:21
-#==================================
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# Copyright (C) 2023 En-Kun Li
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 import numpy as np
 cimport numpy as np

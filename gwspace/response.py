@@ -1,11 +1,8 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# ==================================
-# File Name: response.py
-# Author: En-Kun Li, Han Wang
-# Mail: lienk@mail.sysu.edu.cn, wanghan657@mail2.sysu.edu.cn
-# Created Time: 2023-08-01 14:55:20
-# ==================================
+# Copyright (C) 2023-2026 En-Kun Li, Han Wang
+# SPDX-License-Identifier: GPL-3.0-or-later
+
 """Generate space detector response for multiple TDI generations in both time domain and frequency domain.
  Support 'XYZAET' channel currently. For t-domain, it will return the responsed waveform,
  while for f-domain, it will return the transfer function,
